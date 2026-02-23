@@ -1,0 +1,11 @@
+# Credentials — never commit
+src/config.h
+
+# PlatformIO
+.pio/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
