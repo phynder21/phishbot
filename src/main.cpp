@@ -302,58 +302,73 @@ void sendDashboard(WiFiClient &client) {
   client.println("<style>");
   client.println("body { font-family: sans-serif; text-align: center; background-color: #f0f2f5; padding: 10px; color: #333; }");
   client.println(".card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); display: block; margin: auto; max-width: 800px; }");
-  client.println(".log { text-align: left; background: #000; padding: 20px; border-radius: 8px; height: 340px; overflow-y: auto; font-family: 'Courier New', monospace; color: #33ff33; margin-top: 20px; font-size: 14px; border: 2px solid #444; }");
-  client.println("h1 { color: #1a73e8; }");
-  client.println(".data-row { display: flex; justify-content: space-around; font-size: 1.2em; margin: 15px 0; font-weight: bold; }");
-  client.println("button { font-size: 1.1em; font-weight: bold; padding: 12px 26px; margin: 6px; border: 0; border-radius: 8px; color: #fff; cursor: pointer; }");
-  client.println("#bon { background: #34a853; } #boff { background: #ea4335; } #bctr { background: #5f6368; } #bip { background: #7b1fa2; }");
-  client.println("input[type=range] { width: 90%; max-width: 600px; margin-top: 8px; }");
-  client.println(".panel { background:#111; color:#ff5f1f; font-family:'Courier New',monospace; font-size:1.4em; font-weight:bold; letter-spacing:3px; padding:14px; border-radius:8px; margin-top:16px; border:2px solid #444; }");
+  client.println("h1 { color: #1a73e8; margin: 0 0 4px; }");
+  client.println(".net { color:#5f6368; margin-bottom:18px; }");
+  client.println("fieldset.sec { border:2px solid #dadce0; border-radius:10px; padding:14px 18px 20px; margin:18px 0; }");
+  client.println("fieldset.sec legend { padding:0 10px; font-weight:bold; letter-spacing:2px; color:#5f6368; font-size:0.85em; }");
+  client.println(".data-row { display:flex; justify-content:space-around; flex-wrap:wrap; font-size:1.1em; margin:6px 0 16px; font-weight:bold; }");
+  client.println("button { font-size:1.05em; font-weight:bold; padding:12px 30px; margin:5px; border:0; border-radius:8px; cursor:pointer; background:#dadce0; color:#5f6368; }");
+  client.println("button.on-act { background:#34a853; color:#fff; }");
+  client.println("button.off-act { background:#ea4335; color:#fff; }");
+  client.println("button.led-act { background:#1a73e8; color:#fff; }");
+  client.println("button.action { background:#5f6368; color:#fff; }");
+  client.println("input[type=range] { width:92%; max-width:600px; margin-top:8px; }");
+  client.println(".panel { background:#111; color:#ff5f1f; font-family:'Courier New',monospace; font-size:1.2em; font-weight:bold; letter-spacing:3px; padding:12px; border-radius:8px; margin-top:14px; border:2px solid #444; }");
+  client.println(".log { text-align:left; background:#000; padding:20px; border-radius:8px; height:300px; overflow-y:auto; font-family:'Courier New',monospace; color:#33ff33; margin-top:20px; font-size:14px; border:2px solid #444; }");
   client.println("</style></head><body>");
   client.println("<div class='card'>");
   client.println("<h1>R4 System Control</h1>");
-  client.println("<div style='color:#5f6368;margin-bottom:10px;'>Network: <strong id='net'>-</strong></div>");
+  client.println("<div class='net'>Network: <strong id='net'>-</strong></div>");
+
+  // --- SERVO ---------------------------------------------------------------
+  client.println("<fieldset class='sec'><legend>SERVO</legend>");
   client.println("<div class='data-row'>");
   client.println("<div>Speed: <span id='pct' style='color:#e91e63;'>-</span></div>");
-  client.println("<div>Servo: <span id='srv' style='color:#ff9800;'>-</span></div>");
+  client.println("<div>Angle: <span id='srv' style='color:#ff9800;'>-</span></div>");
   client.println("<div>State: <span id='run'>-</span></div>");
   client.println("<div>Source: <span id='src' style='color:#1a73e8;'>-</span></div>");
   client.println("</div>");
   client.println("<button id='bon' onclick=\"cmd('/on')\">ON</button>");
   client.println("<button id='boff' onclick=\"cmd('/off')\">OFF</button>");
-  client.println("<button id='bctr' onclick=\"cmd('/center')\">CENTER</button>");
-  client.println("<button id='bled' onclick=\"cmd('/led?v='+(ledOn?0:1))\">MATRIX</button>");
-  client.println("<button id='bip' onclick=\"cmd('/ip')\">SHOW IP</button>");
-  client.println("<div style='margin-top:18px;font-weight:bold;'>Speed <span id='slv'>0%</span></div>");
+  client.println("<button class='action' onclick=\"cmd('/center')\">CENTER</button>");
+  client.println("<div style='margin-top:16px;font-weight:bold;'>Speed <span id='slv'>0%</span></div>");
   client.println("<input type='range' id='sl' min='0' max='100' value='0'>");
-  // Mirrors what the physical panel is scrolling, so you can read it from the couch.
-  client.println("<div class='panel'>LED&nbsp;MATRIX: <span id='mtx'>-</span></div>");
+  client.println("</fieldset>");
+
+  // --- LED MATRIX ----------------------------------------------------------
+  client.println("<fieldset class='sec'><legend>LED MATRIX</legend>");
+  client.println("<button id='bledon' onclick=\"cmd('/led?v=1')\">ON</button>");
+  client.println("<button id='bledoff' onclick=\"cmd('/led?v=0')\">OFF</button>");
+  client.println("<button class='action' onclick=\"cmd('/ip')\">SHOW IP</button>");
+  client.println("<div class='panel'><span id='mtx'>-</span></div>");
+  client.println("</fieldset>");
+
   client.println("<div class='log'><strong>[ LIVE CONSOLE LOG ]</strong><br><br><span id='log'></span></div>");
   client.println("</div>");
   client.println("<script>");
-  client.println("var sl=document.getElementById('sl'),drag=false,last=0,ledOn=true;");
+  client.println("var sl=document.getElementById('sl'),drag=false,last=0;");
   client.println("function cmd(p){fetch(p).then(refresh);}");
   client.println("function refresh(){fetch('/status').then(function(r){return r.text();}).then(function(t){");
   client.println("var a=t.split('|~|');");
   client.println("document.getElementById('pct').textContent=a[0]+'%';");
   client.println("document.getElementById('srv').innerHTML=a[1]+'&deg;';");
+  client.println("var run=(a[2]=='1');");
   client.println("var r1=document.getElementById('run');");
-  client.println("r1.textContent=(a[2]=='1')?'RUNNING':'STOPPED';");
-  client.println("r1.style.color=(a[2]=='1')?'#34a853':'#ea4335';");
+  client.println("r1.textContent=run?'RUNNING':'STOPPED';");
+  client.println("r1.style.color=run?'#34a853':'#ea4335';");
+  client.println("document.getElementById('bon').className=run?'on-act':'';");
+  client.println("document.getElementById('boff').className=run?'':'off-act';");
   client.println("document.getElementById('src').textContent=a[3];");
-  client.println("ledOn=(a[4]=='1');");
-  client.println("var bl=document.getElementById('bled');");
-  client.println("bl.textContent=ledOn?'MATRIX ON':'MATRIX OFF';");
-  client.println("bl.style.background=ledOn?'#1a73e8':'#9aa0a6';");
+  client.println("var ledOn=(a[4]=='1');");
+  client.println("document.getElementById('bledon').className=ledOn?'led-act':'';");
+  client.println("document.getElementById('bledoff').className=ledOn?'':'off-act';");
   client.println("document.getElementById('mtx').textContent=ledOn?(a[5]||'-'):'(blank)';");
   client.println("document.getElementById('net').textContent=a[6];");
   client.println("document.getElementById('log').innerHTML=a[7];");
-  // While the slider is being dragged the poll must not yank it back.
   client.println("if(!drag){sl.value=a[0];document.getElementById('slv').textContent=a[0]+'%';}");
   client.println("});}");
   client.println("sl.addEventListener('pointerdown',function(){drag=true;});");
   client.println("sl.addEventListener('pointerup',function(){drag=false;fetch('/speed?v='+sl.value);});");
-  // Throttled to ~150ms: every request is a TCP connection the control loop must service.
   client.println("sl.addEventListener('input',function(){");
   client.println("document.getElementById('slv').textContent=sl.value+'%';");
   client.println("var n=Date.now();if(n-last>150){last=n;fetch('/speed?v='+sl.value);}});");
