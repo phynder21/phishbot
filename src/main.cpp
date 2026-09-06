@@ -6,18 +6,30 @@
 #include "Arduino_LED_Matrix.h"
 #include "config.h"
 
-// Field fallback network, used when WIFI_SSID is not in range. Define either of
-// these in config.h to override. WPA2 requires a passphrase of at least 8 chars.
+// Field fallback network, used when no known network is in range. Both must be
+// defined in config.h (git-ignored) so that no credential of any kind lives in
+// this repository. WPA2 requires a passphrase of at least 8 characters.
 #ifndef AP_SSID
-#define AP_SSID "PHISHBOT"
+#error "Define AP_SSID in src/config.h"
 #endif
 #ifndef AP_PASS
-#define AP_PASS "your-ap-password"
+#error "Define AP_PASS in src/config.h"
 #endif
 
 // --- WIFI CREDENTIALS ---
-char ssid[] = WIFI_SSID;
-char pass[] = WIFI_PASS;
+// Known networks, tried in order at boot. Credentials live in config.h so they stay
+// out of git; define WIFI_SSID2/WIFI_SSID3 there to add more.
+struct WifiCred { const char* ssid; const char* pass; };
+const WifiCred knownNets[] = {
+  { WIFI_SSID, WIFI_PASS },
+#ifdef WIFI_SSID2
+  { WIFI_SSID2, WIFI_PASS2 },
+#endif
+#ifdef WIFI_SSID3
+  { WIFI_SSID3, WIFI_PASS3 },
+#endif
+};
+const int NUM_NETS = sizeof(knownNets) / sizeof(knownNets[0]);
 
 WiFiServer server(80);
 ArduinoLEDMatrix matrix;
@@ -157,6 +169,12 @@ NetMode netMode = NET_JOINING;
 unsigned long joinDeadline = 0;
 const unsigned long JOIN_TIMEOUT_MS = 15000;
 String netLabel = "JOINING";
+int  netIndex   = 0;      // which knownNets entry is being tried
+bool joinSingle = false;  // true when the user picked one network explicitly
+// Network switches are deferred out of the HTTP handler: tearing the connection down
+// mid-response makes the request look like it failed to the browser that sent it.
+int  pendingJoin = -1;    // >= 0 means "join knownNets[pendingJoin]"
+bool pendingAP   = false;
 
 // AP mode never reports WL_CONNECTED -- it reports WL_AP_LISTENING with no client
 // attached and WL_AP_CONNECTED with one -- so readiness cannot be a status test alone.
@@ -194,8 +212,12 @@ void showBanner(const String &t, unsigned long holdMs) {
 }
 
 // Give up on WIFI_SSID and host our own network instead.
-void startAccessPoint() {
-  logMessage("No '" + String(ssid) + "' in range. Starting own network...");
+void startJoin(int idx, bool single);  // defined below; startAccessPoint retries via it
+
+void startAccessPoint(bool afterFailure) {
+  if (afterFailure) logMessage("No known network in range. Starting own network...");
+  else              logMessage("Starting own network on request...");
+  if (serverStarted) { server.end(); serverStarted = false; }
   // Pin a predictable address so the URL is known before you can read the panel.
   WiFi.config(IPAddress(192, 168, 4, 1));
   if (WiFi.beginAP(AP_SSID, AP_PASS) == WL_AP_LISTENING) {
@@ -204,15 +226,29 @@ void startAccessPoint() {
     lastIP = WiFi.localIP().toString();
     netLabel = "AP " + String(AP_SSID) + " " + lastIP;
     logMessage("AP up. Join '" + String(AP_SSID) + "' then browse to " + lastIP);
-    showBanner("AP " + String(AP_SSID) + " - " + lastIP, 30000);
+    showBanner(String(afterFailure ? "NO WIFI - AP " : "AP ") + String(AP_SSID) + " - " + lastIP, 30000);
   } else {
     // Fall back to retrying the home network rather than ending up with no server.
     logMessage("AP failed to start. Retrying station mode.");
     showBanner("AP FAILED", 4000);
-    netMode = NET_JOINING;
-    joinDeadline = millis() + JOIN_TIMEOUT_MS;
-    WiFi.begin(ssid, pass);
+    startJoin(0, false);
   }
+}
+
+// Begin joining knownNets[idx]. When 'single' the user picked this network explicitly,
+// so a failure drops straight to AP rather than walking the rest of the list.
+void startJoin(int idx, bool single) {
+  if (idx < 0 || idx >= NUM_NETS) idx = 0;
+  if (serverStarted) { server.end(); serverStarted = false; }
+  netIndex   = idx;
+  joinSingle = single;
+  netMode    = NET_JOINING;
+  lastIP     = "";
+  joinDeadline = millis() + JOIN_TIMEOUT_MS;
+  netLabel = "JOINING " + String(knownNets[idx].ssid);
+  logMessage("Trying '" + String(knownNets[idx].ssid) + "'...");
+  showBanner("JOINING " + String(knownNets[idx].ssid), 4000);
+  WiFi.begin(knownNets[idx].ssid, knownNets[idx].pass);
 }
 
 // Apply a command path such as "/on" or "/speed?v=50".
@@ -266,6 +302,20 @@ bool applyCommand(const String &path) {
     showBanner("ON", 2500);
     return true;
   }
+  if (path.startsWith("/join")) {
+    int q = path.indexOf("?n=");
+    if (q < 0) return false;
+    int n = path.substring(q + 3).toInt();
+    if (n < 0 || n >= NUM_NETS) return false;
+    pendingJoin = n;  // acted on in loop(), once this response has been sent
+    logMessage("CMD join '" + String(knownNets[n].ssid) + "'");
+    return true;
+  }
+  if (path.startsWith("/ap")) {
+    pendingAP = true;
+    logMessage("CMD force AP");
+    return true;
+  }
   if (path.startsWith("/ip")) {
     logMessage("CMD show ip");
     if (lastIP != "") showBanner(lastIP, 20000);
@@ -279,7 +329,7 @@ bool applyCommand(const String &path) {
 // JSON-escape the HTML already sitting in webLog.
 void sendStatus(WiFiClient &client) {
   client.println("HTTP/1.1 200 OK");
-  client.println("Content-type: text/plain");
+  client.println("Content-type: text/plain; charset=utf-8");
   client.println("Connection: close");
   client.println();
   client.print(activePct);                                    client.print("|~|");
@@ -289,12 +339,14 @@ void sendStatus(WiFiClient &client) {
   client.print(matrixOn ? 1 : 0);                             client.print("|~|");
   client.print(matrixText);                                   client.print("|~|");
   client.print(netLabel);                                     client.print("|~|");
+  // Which dropdown entry is live, so the page can mark and preselect it.
+  client.print(netMode == NET_AP ? String("ap") : String(netIndex)); client.print("|~|");
   client.print(webLog);
 }
 
 void sendDashboard(WiFiClient &client) {
   client.println("HTTP/1.1 200 OK");
-  client.println("Content-type: text/html");
+  client.println("Content-type: text/html; charset=utf-8");
   client.println("Connection: close");
   client.println();
   client.println("<!DOCTYPE HTML><html><head>");
@@ -313,6 +365,8 @@ void sendDashboard(WiFiClient &client) {
   client.println("button.led-act { background:#1a73e8; color:#fff; }");
   client.println("button.action { background:#5f6368; color:#fff; }");
   client.println("input[type=range] { width:92%; max-width:600px; margin-top:8px; }");
+  client.println("select { font-size:1.05em; padding:11px 14px; border-radius:8px; border:2px solid #dadce0; margin:5px; background:#fff; color:#333; }");
+  client.println(".hint { color:#5f6368; margin-top:12px; min-height:1.2em; line-height:1.4; }");
   client.println(".panel { background:#111; color:#ff5f1f; font-family:'Courier New',monospace; font-size:1.2em; font-weight:bold; letter-spacing:3px; padding:12px; border-radius:8px; margin-top:14px; border:2px solid #444; }");
   client.println(".log { text-align:left; background:#000; padding:20px; border-radius:8px; height:300px; overflow-y:auto; font-family:'Courier New',monospace; color:#33ff33; margin-top:20px; font-size:14px; border:2px solid #444; }");
   client.println("</style></head><body>");
@@ -343,11 +397,35 @@ void sendDashboard(WiFiClient &client) {
   client.println("<div class='panel'><span id='mtx'>-</span></div>");
   client.println("</fieldset>");
 
+  // --- NETWORK -------------------------------------------------------------
+  client.println("<fieldset class='sec'><legend>NETWORK</legend>");
+  client.print("<select id='netsel'>");
+  for (int i = 0; i < NUM_NETS; i++) {
+    client.print("<option value='"); client.print(i); client.print("' data-name='");
+    client.print(knownNets[i].ssid); client.print("'>");
+    client.print(knownNets[i].ssid); client.print("</option>");
+  }
+  client.print("<option value='ap' data-name='"); client.print(AP_SSID);
+  client.print(" (own network)'>"); client.print(AP_SSID);
+  client.println(" (own network)</option></select>");
+  client.println("<button class='action' onclick=\"joinNet()\">CONNECT</button>");
+  client.println("<div id='netmsg' class='hint'></div>");
+  client.println("</fieldset>");
+
   client.println("<div class='log'><strong>[ LIVE CONSOLE LOG ]</strong><br><br><span id='log'></span></div>");
   client.println("</div>");
   client.println("<script>");
-  client.println("var sl=document.getElementById('sl'),drag=false,last=0;");
+  client.println("var sl=document.getElementById('sl'),drag=false,last=0,netTouched=false;");
+  client.println("document.getElementById('netsel').addEventListener('change',function(){netTouched=true;});");
   client.println("function cmd(p){fetch(p).then(refresh);}");
+  client.println("function joinNet(){");
+  client.println("var s=document.getElementById('netsel');");
+  client.println("var v=s.value,name=s.options[s.selectedIndex].text;");
+  client.println("fetch(v=='ap'?'/ap':('/join?n='+v));");
+  client.println("document.getElementById('netmsg').innerHTML='Switching to <strong>'+name+");
+  client.println("'</strong>. This page will stop updating. Reconnect your device to that network, '+");
+  client.println("'then browse to the address shown on the LED matrix. If the join fails the board '+");
+  client.println("'falls back to its own network.';}");
   client.println("function refresh(){fetch('/status').then(function(r){return r.text();}).then(function(t){");
   client.println("var a=t.split('|~|');");
   client.println("document.getElementById('pct').textContent=a[0]+'%';");
@@ -364,7 +442,14 @@ void sendDashboard(WiFiClient &client) {
   client.println("document.getElementById('bledoff').className=ledOn?'':'off-act';");
   client.println("document.getElementById('mtx').textContent=ledOn?(a[5]||'-'):'(blank)';");
   client.println("document.getElementById('net').textContent=a[6];");
-  client.println("document.getElementById('log').innerHTML=a[7];");
+  // Decorate the connected entry and default the control to it, so the dropdown shows
+  // where you ARE, not just where you could go. Stop once the user picks something.
+  client.println("var cur=a[7],ns=document.getElementById('netsel');");
+  client.println("for(var i=0;i<ns.options.length;i++){var o=ns.options[i];");
+  client.println("var nm=o.getAttribute('data-name');");
+  client.println("o.textContent=(o.value==cur)?('\u25CF '+nm+' - connected'):nm;}");
+  client.println("if(!netTouched){ns.value=cur;}");
+  client.println("document.getElementById('log').innerHTML=a[8];");
   client.println("if(!drag){sl.value=a[0];document.getElementById('slv').textContent=a[0]+'%';}");
   client.println("});}");
   client.println("sl.addEventListener('pointerdown',function(){drag=true;});");
@@ -395,9 +480,7 @@ void setup() {
   knob.set(0); 
 
   logMessage("System Start. Initializing...");
-  WiFi.begin(ssid, pass); 
-  joinDeadline = millis() + JOIN_TIMEOUT_MS;
-  showText("SEARCHING");
+  startJoin(0, false);
 }
 
 void loop() {
@@ -513,22 +596,28 @@ void loop() {
 
   // 2. NETWORK SUPERVISION
   if (netMode == NET_JOINING) {
-    if (WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP().toString() == "0.0.0.0") {
+      // Associated, but DHCP has not answered yet. Hold the join open rather than
+      // announcing 0.0.0.0 and scrolling it across the panel.
+      joinDeadline = currentTime + 5000;
+    } else if (WiFi.status() == WL_CONNECTED) {
       netMode = NET_STATION;
       lastIP = WiFi.localIP().toString();
-      netLabel = "HOME " + lastIP;
-      logMessage("Joined '" + String(ssid) + "'. IP: " + lastIP);
+      netLabel = String(knownNets[netIndex].ssid) + " " + lastIP;
+      logMessage("Joined '" + String(knownNets[netIndex].ssid) + "'. IP: " + lastIP);
       // Hold it long enough to read off the panel and type into a browser.
       showBanner(lastIP, 20000);
     } else if (currentTime > joinDeadline) {
-      startAccessPoint();
+      logMessage("'" + String(knownNets[netIndex].ssid) + "' not in range.");
+      if (!joinSingle && netIndex + 1 < NUM_NETS) startJoin(netIndex + 1, false);
+      else startAccessPoint(true);
     }
   } else if (netMode == NET_STATION) {
     // A reconnect can come back with a different DHCP lease.
     String currentIP = WiFi.localIP().toString();
     if (currentIP != lastIP && currentIP != "0.0.0.0") {
       lastIP = currentIP;
-      netLabel = "HOME " + lastIP;
+      netLabel = String(knownNets[netIndex].ssid) + " " + lastIP;
       showBanner(currentIP, 20000);
       logMessage("IP changed: " + currentIP);
     }
@@ -550,11 +639,16 @@ void loop() {
     if (client) {
       String currentLine = "";
       String reqLine = "";
+      bool handled = false;
       unsigned long reqStart = millis();
-      // Bounded read. The servo and the matrix are driven from this same loop, so a
-      // client that opens a socket and then goes quiet must not stall them forever.
-      while (client.connected() && millis() - reqStart < 1000) {
-        if (client.available()) {
+      // Do NOT gate this on client.connected(). server.available() can hand back a
+      // client before its request bytes have landed, and connected() reports false in
+      // that window -- so the request gets dropped and the socket closed without a
+      // reply, which the caller sees as "connection reset by peer". Wait for data
+      // instead, bounded by a timeout so a client that connects and stays silent
+      // cannot stall the servo and matrix that share this loop.
+      while (!handled && millis() - reqStart < 6000) {
+        if (client.available() > 0) {
           char c = client.read();
           if (c == '\n') {
             if (currentLine.length() == 0) {
@@ -572,16 +666,27 @@ void loop() {
                 logMessage("Inbound request from: " + client.remoteIP().toString());
                 sendDashboard(client);
               }
-              break;
+              handled = true;
             } else {
               // The first non-empty line is "GET /path HTTP/1.1"; the rest are headers.
               if (reqLine.length() == 0) reqLine = currentLine;
               currentLine = "";
             }
           } else if (c != '\r') { currentLine += c; }
+        } else {
+          // available() is an AT round trip to the modem; pausing keeps us from
+          // flooding its command interface while the rest of the request arrives.
+          delay(5);
         }
       }
+      if (!handled) logMessage("HTTP: request never completed");
       client.stop();
     }
   }
+
+  // 5. DEFERRED NETWORK SWITCHES
+  // Handled here rather than in applyCommand() so the HTTP response is fully sent and
+  // the socket closed before the interface it travelled over is torn down.
+  if (pendingJoin >= 0) { int n = pendingJoin; pendingJoin = -1; startJoin(n, true); }
+  if (pendingAP)        { pendingAP = false;   startAccessPoint(false); }
 }

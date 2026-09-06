@@ -51,13 +51,22 @@ Create `src/config.h` (git-ignored, never commit it):
 
 ```c
 #pragma once
-#define WIFI_SSID "your-network"
-#define WIFI_PASS "your-password"
 
-// Optional - override the field-mode access point:
-// #define AP_SSID "PHISHBOT"
-// #define AP_PASS "your-ap-password"   // WPA2 requires 8+ characters
+// Home networks, tried in order at boot. Add WIFI_SSID3/WIFI_PASS3 for a third.
+#define WIFI_SSID  "your-network"
+#define WIFI_PASS  "your-password"
+
+#define WIFI_SSID2 "your-second-network"
+#define WIFI_PASS2 "your-second-password"
+
+// The board's own access point, used when none of the above are in range.
+// WPA2 requires a passphrase of at least 8 characters.
+#define AP_SSID    "PHISHBOT"
+#define AP_PASS    "your-ap-password"
 ```
+
+All five are required — `main.cpp` deliberately `#error`s rather than shipping a
+default password, so that no credential of any kind lives in this repository.
 
 ---
 
@@ -87,8 +96,8 @@ the IP for 20 seconds on connect, **or press the knob** any time to redisplay it
 access point:
 
 ```
-Network:   PHISHBOT
-Password:  your-ap-password
+Network:   AP_SSID   as set in src/config.h
+Password:  AP_PASS   as set in src/config.h
 URL:       http://192.168.4.1
 ```
 
