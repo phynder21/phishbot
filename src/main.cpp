@@ -143,8 +143,15 @@ float currentPhase = 0.0;
 unsigned long lastLoopTime = 0;
 
 void logMessage(String msg) {
-  webLog = "[" + String(millis()/1000) + "s] " + msg + "<br>" + webLog;
-  if (webLog.length() > 3000) webLog = webLog.substring(0, 3000);
+  // Oldest first, newest last -- the way every other console reads.
+  webLog += "[" + String(millis()/1000) + "s] " + msg + "<br>";
+  if (webLog.length() > 3000) {
+    // Trim from the front so the newest lines survive, and cut on a line boundary
+    // rather than mid-tag.
+    int cut = webLog.indexOf("<br>", webLog.length() - 3000);
+    webLog = (cut >= 0) ? webLog.substring(cut + 4)
+                        : webLog.substring(webLog.length() - 3000);
+  }
   Serial.println(msg); 
 }
 
@@ -316,6 +323,14 @@ bool applyCommand(const String &path) {
     logMessage("CMD force AP");
     return true;
   }
+  if (path.startsWith("/showstatus")) {
+    // Drop any banner early rather than making the user wait it out.
+    bannerUntil = 0;
+    showText(statusString());
+    windowIndex = 0;  // deliberate user action, so start the scroll from the top
+    logMessage("CMD show status");
+    return true;
+  }
   if (path.startsWith("/ip")) {
     logMessage("CMD show ip");
     if (lastIP != "") showBanner(lastIP, 20000);
@@ -364,11 +379,13 @@ void sendDashboard(WiFiClient &client) {
   client.println("button.off-act { background:#ea4335; color:#fff; }");
   client.println("button.led-act { background:#1a73e8; color:#fff; }");
   client.println("button.action { background:#5f6368; color:#fff; }");
+  client.println("button.flash { background:#1a73e8; box-shadow:0 0 0 4px rgba(26,115,232,0.35); }");
   client.println("input[type=range] { width:92%; max-width:600px; margin-top:8px; }");
   client.println("select { font-size:1.05em; padding:11px 14px; border-radius:8px; border:2px solid #dadce0; margin:5px; background:#fff; color:#333; }");
   client.println(".hint { color:#5f6368; margin-top:12px; min-height:1.2em; line-height:1.4; }");
   client.println(".panel { background:#111; color:#ff5f1f; font-family:'Courier New',monospace; font-size:1.2em; font-weight:bold; letter-spacing:3px; padding:12px; border-radius:8px; margin-top:14px; border:2px solid #444; }");
-  client.println(".log { text-align:left; background:#000; padding:20px; border-radius:8px; height:300px; overflow-y:auto; font-family:'Courier New',monospace; color:#33ff33; margin-top:20px; font-size:14px; border:2px solid #444; }");
+  client.println(".log { text-align:left; background:#000; padding:16px 20px; border-radius:8px; height:300px; overflow-y:auto; font-family:'Courier New',monospace; color:#33ff33; margin-top:6px; font-size:14px; border:2px solid #444; }");
+  client.println(".loghdr { text-align:left; margin-top:22px; color:#5f6368; font-weight:bold; font-family:'Courier New',monospace; letter-spacing:1px; }");
   client.println("</style></head><body>");
   client.println("<div class='card'>");
   client.println("<h1>R4 System Control</h1>");
@@ -384,7 +401,7 @@ void sendDashboard(WiFiClient &client) {
   client.println("</div>");
   client.println("<button id='bon' onclick=\"cmd('/on')\">ON</button>");
   client.println("<button id='boff' onclick=\"cmd('/off')\">OFF</button>");
-  client.println("<button class='action' onclick=\"cmd('/center')\">CENTER</button>");
+  client.println("<button class='action' onclick=\"cmd('/center',this)\">CENTER</button>");
   client.println("<div style='margin-top:16px;font-weight:bold;'>Speed <span id='slv'>0%</span></div>");
   client.println("<input type='range' id='sl' min='0' max='100' value='0'>");
   client.println("</fieldset>");
@@ -393,7 +410,8 @@ void sendDashboard(WiFiClient &client) {
   client.println("<fieldset class='sec'><legend>LED MATRIX</legend>");
   client.println("<button id='bledon' onclick=\"cmd('/led?v=1')\">ON</button>");
   client.println("<button id='bledoff' onclick=\"cmd('/led?v=0')\">OFF</button>");
-  client.println("<button class='action' onclick=\"cmd('/ip')\">SHOW IP</button>");
+  client.println("<button class='action' onclick=\"cmd('/ip',this)\">SHOW IP</button>");
+  client.println("<button class='action' onclick=\"cmd('/showstatus',this)\">SHOW STATUS</button>");
   client.println("<div class='panel'><span id='mtx'>-</span></div>");
   client.println("</fieldset>");
 
@@ -412,12 +430,14 @@ void sendDashboard(WiFiClient &client) {
   client.println("<div id='netmsg' class='hint'></div>");
   client.println("</fieldset>");
 
-  client.println("<div class='log'><strong>[ LIVE CONSOLE LOG ]</strong><br><br><span id='log'></span></div>");
+  client.println("<div class='loghdr'>[ LIVE CONSOLE LOG ]</div>");
+  client.println("<div class='log' id='logbox'><span id='log'></span></div>");
   client.println("</div>");
   client.println("<script>");
   client.println("var sl=document.getElementById('sl'),drag=false,last=0,netTouched=false;");
   client.println("document.getElementById('netsel').addEventListener('change',function(){netTouched=true;});");
-  client.println("function cmd(p){fetch(p).then(refresh);}");
+  client.println("function cmd(p,el){if(el){el.classList.add('flash');");
+  client.println("setTimeout(function(){el.classList.remove('flash');},450);}fetch(p).then(refresh);}");
   client.println("function joinNet(){");
   client.println("var s=document.getElementById('netsel');");
   client.println("var v=s.value,name=s.options[s.selectedIndex].text;");
@@ -449,7 +469,10 @@ void sendDashboard(WiFiClient &client) {
   client.println("var nm=o.getAttribute('data-name');");
   client.println("o.textContent=(o.value==cur)?('\u25CF '+nm+' - connected'):nm;}");
   client.println("if(!netTouched){ns.value=cur;}");
+  client.println("var box=document.getElementById('logbox');");
+  client.println("var pinned=(box.scrollHeight-box.scrollTop-box.clientHeight)<30;");
   client.println("document.getElementById('log').innerHTML=a[8];");
+  client.println("if(pinned){box.scrollTop=box.scrollHeight;}");
   client.println("if(!drag){sl.value=a[0];document.getElementById('slv').textContent=a[0]+'%';}");
   client.println("});}");
   client.println("sl.addEventListener('pointerdown',function(){drag=true;});");
