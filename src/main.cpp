@@ -458,7 +458,7 @@ void sendDashboard(WiFiClient &client) {
   client.println("document.getElementById('slv').textContent=sl.value+'%';");
   client.println("var n=Date.now();if(n-last>150){last=n;fetch('/speed?v='+sl.value);}});");
   client.println("sl.addEventListener('change',function(){fetch('/speed?v='+sl.value);});");
-  client.println("setInterval(refresh,1000);refresh();");
+  client.println("setInterval(refresh,2500);refresh();");
   client.println("</script>");
   client.println("</body></html>");
 }
@@ -635,7 +635,11 @@ void loop() {
 
   // 4. HTTP: dashboard, /status poll, and the command endpoints
   if (serverStarted) {
-    WiFiClient client = server.available();
+    // accept(), not available(). available() caches a client object on the server and
+    // re-returns it whenever the modem reuses a socket number -- so after we stop() our
+    // copy, a later connection can hand back that stale object with a stale rx_buffer,
+    // leaving the server accepting TCP but never producing a readable request.
+    WiFiClient client = server.accept();
     if (client) {
       String currentLine = "";
       String reqLine = "";
